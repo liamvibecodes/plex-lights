@@ -54,6 +54,8 @@ cd plex-lights
 # Configure your lights
 cp config.json.example config.json
 # Edit config.json with your bridge IP, API key, light IDs, etc.
+# Or use interactive wizard:
+bash install.sh --wizard
 
 # Validate config before running
 python3 plex-lights.py --validate-config
@@ -82,6 +84,25 @@ What it does:
 - Installs/starts the launchd service using `.venv/bin/python3`
 
 If `config.json` does not exist, it is created from `config.json.example` and the installer exits so you can edit values, then rerun `bash install.sh --setup`.
+
+### Interactive Wizard
+
+```bash
+bash install.sh --wizard
+```
+
+Wizard prompts for:
+
+- Core settings (port, webhook token, player filter, dry-run default)
+- Hue settings (bridge IP, API user, light IDs)
+- Govee settings (API key, device, model)
+- Home Assistant settings (URL, token, SSL verify, entities/scenes)
+
+Then writes `config.json`. For full setup in one pass:
+
+```bash
+bash install.sh --wizard --setup
+```
 
 ## Configuration
 
@@ -298,6 +319,9 @@ launchctl bootout gui/$(id -u)/com.plex-lights
 
 # Refresh .venv dependencies
 bash install.sh --setup
+
+# Rebuild config with wizard
+bash install.sh --wizard
 
 # Uninstall
 bash install.sh --uninstall
