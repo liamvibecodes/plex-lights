@@ -3,6 +3,7 @@
   "log_dir": "",
   "tv_player_name": "",
   "webhook_token": "",
+  "dry_run": false,
 
   "hue": {
     "enabled": true,

@@ -13,6 +13,7 @@ Stop/end    -> back to normal
 Configuration via config.json or environment variables.
 """
 
+import argparse
 import copy
 import json
 import logging
@@ -45,6 +46,7 @@ DEFAULT_CONFIG = {
     "log_dir": "",
     "tv_player_name": "",
     "webhook_token": "",
+    "dry_run": False,
     "hue": {
         "enabled": False,
         "bridge_ip": "",
@@ -253,6 +255,7 @@ def validate_config(config):
 
     config["tv_player_name"] = str(config.get("tv_player_name", "")).strip()
     config["webhook_token"] = str(config.get("webhook_token", "")).strip()
+    config["dry_run"] = as_bool(config.get("dry_run", False))
 
     hue = config.get("hue")
     if not isinstance(hue, dict):
@@ -370,6 +373,7 @@ def load_config():
         config["tv_player_name"] = os.environ.get("TV_PLAYER_NAME", "")
         config["log_dir"] = os.environ.get("PLEX_LIGHTS_LOG_DIR", "")
         config["webhook_token"] = os.environ.get("PLEX_LIGHTS_WEBHOOK_TOKEN", "")
+        config["dry_run"] = os.environ.get("PLEX_LIGHTS_DRY_RUN", "false")
 
         if os.environ.get("HUE_BRIDGE_IP"):
             config["hue"]["enabled"] = True
@@ -428,6 +432,11 @@ def set_hue_lights(config, bri, ct, log):
 
     if not hue["lights"]:
         log.warning("Hue enabled but no lights configured")
+        return
+
+    if config.get("dry_run", False):
+        for light_id in hue["lights"]:
+            log.info("[DRY RUN] Hue light %s -> on=true bri=%s ct=%s", light_id, bri, ct)
         return
 
     for light_id in hue["lights"]:
@@ -500,6 +509,10 @@ def set_govee_light(config, brightness, color, log):
     if not govee["enabled"]:
         return
 
+    if config.get("dry_run", False):
+        log.info("[DRY RUN] Govee -> brightness=%s rgb=(%s,%s,%s)", brightness, color["r"], color["g"], color["b"])
+        return
+
     color_value = ((color["r"] & 0xFF) << 16) | ((color["g"] & 0xFF) << 8) | (color["b"] & 0xFF)
 
     if govee_control_request(
@@ -533,6 +546,10 @@ def home_assistant_service_request(config, domain, service, data, log):
         "Authorization": f"Bearer {home_assistant['token']}",
         "Content-Type": "application/json",
     }
+
+    if config.get("dry_run", False):
+        log.info("[DRY RUN] Home Assistant %s.%s -> %s", domain, service, data)
+        return True
 
     try:
         response = requests.post(
@@ -750,12 +767,27 @@ def make_handler(config, log):
 # --- Main ---
 
 
+def parse_args():
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(description="Plex Lights webhook listener")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Simulate light actions without sending requests to providers.",
+    )
+    return parser.parse_args()
+
+
 def main():
+    args = parse_args()
     try:
         config = load_config()
     except ValueError as exc:
         print(f"CONFIG ERROR: {exc}", file=sys.stderr)
         sys.exit(1)
+
+    if args.dry_run:
+        config["dry_run"] = True
 
     log = setup_logging(config)
 
@@ -781,6 +813,8 @@ def main():
 
     if config["webhook_token"]:
         log.info("Webhook token auth is enabled")
+    if config["dry_run"]:
+        log.info("Dry-run mode enabled: provider calls will be simulated")
 
     tv_player = config.get("tv_player_name", "")
     if tv_player:

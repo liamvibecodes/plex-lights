@@ -59,6 +59,9 @@ cp config.json.example config.json
 # Test it
 python3 plex-lights.py
 
+# Or test webhook flow without changing real lights
+python3 plex-lights.py --dry-run
+
 # Install as background service (auto-starts on boot)
 bash install.sh
 ```
@@ -66,6 +69,8 @@ bash install.sh
 ## Configuration
 
 Copy `config.json.example` to `config.json` and edit it:
+
+Set `"dry_run": true` to simulate all light actions (no provider API calls).
 
 ### Philips Hue
 
@@ -206,8 +211,19 @@ export HOME_ASSISTANT_MODE_SCENES=movie:scene.movie_mode,pause:scene.pause_mode
 export HOME_ASSISTANT_VERIFY_SSL=true
 export TV_PLAYER_NAME="Living Room TV"
 export PLEX_LIGHTS_WEBHOOK_TOKEN="change-this-to-a-random-secret"
+export PLEX_LIGHTS_DRY_RUN=false
 python3 plex-lights.py
 ```
+
+### Dry-Run Mode
+
+Use dry-run when validating Tautulli webhook payloads and mode mapping:
+
+- CLI override: `python3 plex-lights.py --dry-run`
+- Config: `"dry_run": true`
+- Env: `PLEX_LIGHTS_DRY_RUN=true`
+
+In dry-run mode, webhook handling and logs run normally, but no Hue, Govee, or Home Assistant API requests are sent.
 
 ## Tautulli Webhook Setup
 
