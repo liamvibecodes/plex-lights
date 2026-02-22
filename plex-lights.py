@@ -25,7 +25,7 @@ from urllib.parse import parse_qs, urlparse
 try:
     import requests
 except ImportError:
-    print("ERROR: requests not installed. Run: pip install requests")
+    print("ERROR: requests not installed. Run: pip install -r requirements.txt")
     sys.exit(1)
 
 REQUEST_TIMEOUT_SECONDS = 10
