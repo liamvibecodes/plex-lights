@@ -771,6 +771,11 @@ def parse_args():
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description="Plex Lights webhook listener")
     parser.add_argument(
+        "--validate-config",
+        action="store_true",
+        help="Validate config and exit.",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Simulate light actions without sending requests to providers.",
@@ -785,6 +790,10 @@ def main():
     except ValueError as exc:
         print(f"CONFIG ERROR: {exc}", file=sys.stderr)
         sys.exit(1)
+
+    if args.validate_config:
+        print("Config is valid.")
+        return
 
     if args.dry_run:
         config["dry_run"] = True

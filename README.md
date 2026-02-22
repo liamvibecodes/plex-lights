@@ -41,7 +41,7 @@ Tautulli sends play/pause/stop webhooks to plex-lights. The script adjusts your 
 
 - [Plex Media Server](https://www.plex.tv/)
 - [Tautulli](https://tautulli.com/) (for webhooks)
-- Python 3.8+ (`pip install -r requirements.txt`)
+- Python 3.8+
 - Philips Hue bridge and/or Govee smart lights with a cloud API key
 - Optional: Home Assistant with a long-lived access token
 
@@ -50,11 +50,13 @@ Tautulli sends play/pause/stop webhooks to plex-lights. The script adjusts your 
 ```bash
 git clone https://github.com/liamvibecodes/plex-lights.git
 cd plex-lights
-pip install -r requirements.txt
 
 # Configure your lights
 cp config.json.example config.json
 # Edit config.json with your bridge IP, API key, light IDs, etc.
+
+# Validate config before running
+python3 plex-lights.py --validate-config
 
 # Test it
 python3 plex-lights.py
@@ -62,9 +64,24 @@ python3 plex-lights.py
 # Or test webhook flow without changing real lights
 python3 plex-lights.py --dry-run
 
-# Install as background service (auto-starts on boot)
-bash install.sh
+# One-shot setup + install as background service (auto-starts on boot)
+bash install.sh --setup
 ```
+
+### One-Shot Installer
+
+```bash
+bash install.sh --setup
+```
+
+What it does:
+
+- Creates `.venv` (local virtual environment) if missing
+- Installs dependencies from `requirements.txt` into `.venv`
+- Validates `config.json` before service install
+- Installs/starts the launchd service using `.venv/bin/python3`
+
+If `config.json` does not exist, it is created from `config.json.example` and the installer exits so you can edit values, then rerun `bash install.sh --setup`.
 
 ## Configuration
 
@@ -225,6 +242,14 @@ Use dry-run when validating Tautulli webhook payloads and mode mapping:
 
 In dry-run mode, webhook handling and logs run normally, but no Hue, Govee, or Home Assistant API requests are sent.
 
+### Config Validation
+
+```bash
+python3 plex-lights.py --validate-config
+```
+
+Useful before `bash install.sh --setup` to catch config issues early.
+
 ## Tautulli Webhook Setup
 
 1. Open Tautulli > Settings > Notification Agents > Add a new notification agent
@@ -259,7 +284,10 @@ curl http://localhost:32500/health
 The install script creates a launchd job that starts on boot and auto-restarts if it crashes:
 
 ```bash
-# Install
+# One-shot install (recommended)
+bash install.sh --setup
+
+# Install using existing Python environment
 bash install.sh
 
 # Restart
@@ -267,6 +295,9 @@ launchctl kickstart -k gui/$(id -u)/com.plex-lights
 
 # Stop
 launchctl bootout gui/$(id -u)/com.plex-lights
+
+# Refresh .venv dependencies
+bash install.sh --setup
 
 # Uninstall
 bash install.sh --uninstall

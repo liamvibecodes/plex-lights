@@ -35,6 +35,7 @@ jobs:
       - name: Smoke test server boot
         run: |
           cp config.json.example config.json
+          python3 plex-lights.py --validate-config
           python3 plex-lights.py > /tmp/plex-lights-test.log 2>&1 &
           PID=$!
           trap 'kill $PID 2>/dev/null || true; rm -f config.json' EXIT
