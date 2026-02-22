@@ -2,6 +2,7 @@
   "port": 32500,
   "log_dir": "",
   "tv_player_name": "",
+  "webhook_token": "",
 
   "hue": {
     "enabled": true,

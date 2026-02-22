@@ -29,13 +29,23 @@ if [[ ! -f "$SCRIPT_DIR/plex-lights.py" ]]; then
     exit 1
 fi
 
+if [[ -z "$PYTHON" ]]; then
+    echo -e "${RED}python3 not found in PATH. Install Python 3.8+ and retry.${NC}"
+    exit 1
+fi
+
 if ! "$PYTHON" -c "import requests" 2>/dev/null; then
-    echo -e "${RED}Python requests module not installed. Run: pip install requests${NC}"
+    echo -e "${RED}Python requests module not installed. Run: pip install -r requirements.txt${NC}"
     exit 1
 fi
 
 if [[ ! -f "$SCRIPT_DIR/config.json" ]]; then
     echo -e "${YELLOW}No config.json found. Copy config.json.example to config.json and edit it.${NC}"
+    exit 1
+fi
+
+if ! "$PYTHON" -m json.tool "$SCRIPT_DIR/config.json" >/dev/null 2>&1; then
+    echo -e "${RED}config.json is not valid JSON. Fix it before installing.${NC}"
     exit 1
 fi
 

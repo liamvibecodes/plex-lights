@@ -24,7 +24,7 @@
 |-------|--------|
 | **Play / Resume** | Dim to candlelight (~5%, warm amber) |
 | **Pause** | Brighten slightly (~30%, soft amber) |
-| **Stop** | Back to normal (100%, warm white) |
+| **Stop / End** | Back to normal (100%, warm white) |
 
 Works with movies and TV episodes. Ignores music, photos, and other media types.
 
@@ -40,7 +40,7 @@ Tautulli sends play/pause/stop webhooks to plex-lights. The script adjusts your 
 
 - [Plex Media Server](https://www.plex.tv/)
 - [Tautulli](https://tautulli.com/) (for webhooks)
-- Python 3.8+ with `requests` (`pip install requests`)
+- Python 3.8+ (`pip install -r requirements.txt`)
 - Philips Hue bridge and/or Govee smart lights with a cloud API key
 
 ## Quick Start
@@ -48,7 +48,7 @@ Tautulli sends play/pause/stop webhooks to plex-lights. The script adjusts your 
 ```bash
 git clone https://github.com/liamvibecodes/plex-lights.git
 cd plex-lights
-pip install requests
+pip install -r requirements.txt
 
 # Configure your lights
 cp config.json.example config.json
@@ -112,6 +112,23 @@ By default, plex-lights triggers on ALL players. To limit it to your TV:
 }
 ```
 
+### Webhook Authentication (Optional but Recommended)
+
+Set a shared token and require it on webhook requests:
+
+```json
+{
+  "webhook_token": "change-this-to-a-random-secret"
+}
+```
+
+When set, plex-lights accepts either:
+
+- Header: `X-Plex-Lights-Token: <your-token>`
+- Query param: `?token=<your-token>`
+
+For Tautulli, easiest is adding the query parameter to the webhook URL.
+
 ### Light Modes
 
 Customize brightness and color for each state:
@@ -148,6 +165,7 @@ export GOVEE_API_KEY=your-key
 export GOVEE_DEVICE=AA:BB:CC:DD:EE:FF:00:11
 export GOVEE_MODEL=H6076
 export TV_PLAYER_NAME="Living Room TV"
+export PLEX_LIGHTS_WEBHOOK_TOKEN="change-this-to-a-random-secret"
 python3 plex-lights.py
 ```
 
@@ -155,7 +173,7 @@ python3 plex-lights.py
 
 1. Open Tautulli > Settings > Notification Agents > Add a new notification agent
 2. Select **Webhook**
-3. Set the webhook URL to `http://localhost:32500`
+3. Set the webhook URL to `http://localhost:32500?token=change-this-to-a-random-secret`
 4. Under **Triggers**, enable:
    - Playback Start
    - Playback Stop
@@ -173,6 +191,12 @@ python3 plex-lights.py
 ```
 
 6. Save and test with "Test Notification"
+
+Health endpoint:
+
+```bash
+curl http://localhost:32500/health
+```
 
 ## Running as a Service
 

@@ -17,6 +17,9 @@ jobs:
         with:
           python-version: "3.x"
 
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
       - name: Syntax check Python
         run: python -m py_compile plex-lights.py
 
@@ -25,6 +28,18 @@ jobs:
           for f in $(find . -name '*.sh' -type f); do
             bash -n "$f" || exit 1
           done
+
+      - name: Validate JSON examples
+        run: python -m json.tool config.json.example >/dev/null
+
+      - name: Smoke test server boot
+        run: |
+          cp config.json.example config.json
+          python3 plex-lights.py > /tmp/plex-lights-test.log 2>&1 &
+          PID=$!
+          trap 'kill $PID 2>/dev/null || true; rm -f config.json' EXIT
+          sleep 2
+          curl -fsS http://127.0.0.1:32500/health >/dev/null
 
       - name: Check for secrets
         run: |
