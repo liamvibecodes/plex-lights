@@ -1,0 +1,40 @@
+{
+  "port": 32500,
+  "log_dir": "",
+  "tv_player_name": "",
+
+  "hue": {
+    "enabled": true,
+    "bridge_ip": "192.168.1.xxx",
+    "api_user": "your-hue-api-username",
+    "lights": [1, 2, 3]
+  },
+
+  "govee": {
+    "enabled": false,
+    "api_key": "your-govee-api-key",
+    "device": "AA:BB:CC:DD:EE:FF:00:11",
+    "model": "H6076"
+  },
+
+  "modes": {
+    "movie": {
+      "hue_brightness": 13,
+      "hue_color_temp": 500,
+      "govee_brightness": 5,
+      "govee_color": {"r": 255, "g": 120, "b": 20}
+    },
+    "pause": {
+      "hue_brightness": 77,
+      "hue_color_temp": 400,
+      "govee_brightness": 25,
+      "govee_color": {"r": 255, "g": 160, "b": 60}
+    },
+    "normal": {
+      "hue_brightness": 254,
+      "hue_color_temp": 366,
+      "govee_brightness": 100,
+      "govee_color": {"r": 255, "g": 200, "b": 120}
+    }
+  }
+}

@@ -1,0 +1,38 @@
+name: Bug Report
+description: Something isn't working
+labels: [bug]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the bug and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Configuration
+      description: Paste your config.json (redact API keys and bridge credentials).
+      render: json
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log output
+      description: Paste relevant lines from plex-lights.log.
+      render: text
+  - type: dropdown
+    id: lights
+    attributes:
+      label: Light type
+      options:
+        - Philips Hue only
+        - Govee only
+        - Both Hue and Govee
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: macOS version
+      placeholder: "e.g. macOS 15.3"

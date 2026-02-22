@@ -1,0 +1,34 @@
+name: Validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Syntax check Python
+        run: python -m py_compile plex-lights.py
+
+      - name: Syntax check shell scripts
+        run: |
+          for f in $(find . -name '*.sh' -type f); do
+            bash -n "$f" || exit 1
+          done
+
+      - name: Check for secrets
+        run: |
+          if grep -rn "api_key.*=.*['\"][a-zA-Z0-9-]\{20,\}" plex-lights.py; then
+            echo "Possible hardcoded secret found"
+            exit 1
+          fi

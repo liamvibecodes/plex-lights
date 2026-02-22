@@ -1,0 +1,206 @@
+<div align="center">
+  <br>
+  <img src="https://img.shields.io/badge/PLEX_LIGHTS-EBAF00?style=for-the-badge&logo=plex&logoColor=white" alt="Plex Lights" height="40" />
+  <br><br>
+  <strong>Auto-dims your lights when a movie starts playing on Plex</strong>
+  <br>
+  <sub>Webhook server for Tautulli. Supports Philips Hue and Govee smart lights. Runs as a background service on macOS.</sub>
+  <br><br>
+  <img src="https://img.shields.io/badge/Python-3776AB?style=flat-square&logo=python&logoColor=white" />
+  <img src="https://img.shields.io/badge/Plex-EBAF00?style=flat-square&logo=plex&logoColor=white" />
+  <img src="https://img.shields.io/badge/Tautulli-E5A00D?style=flat-square&logoColor=white" />
+  <img src="https://img.shields.io/badge/Philips_Hue-4DB8FF?style=flat-square&logoColor=white" />
+  <img src="https://img.shields.io/badge/Govee-00C853?style=flat-square&logoColor=white" />
+  <img src="https://img.shields.io/badge/macOS-000000?style=flat-square&logo=apple&logoColor=white" />
+  <br><br>
+  <img src="https://img.shields.io/github/stars/liamvibecodes/plex-lights?style=flat-square&color=yellow" />
+  <img src="https://img.shields.io/github/license/liamvibecodes/plex-lights?style=flat-square" />
+  <br><br>
+</div>
+
+## What It Does
+
+| Event | Lights |
+|-------|--------|
+| **Play / Resume** | Dim to candlelight (~5%, warm amber) |
+| **Pause** | Brighten slightly (~30%, soft amber) |
+| **Stop** | Back to normal (100%, warm white) |
+
+Works with movies and TV episodes. Ignores music, photos, and other media types.
+
+## How It Works
+
+```
+Plex -> Tautulli (webhook) -> plex-lights.py (port 32500) -> Hue bridge / Govee API
+```
+
+Tautulli sends play/pause/stop webhooks to plex-lights. The script adjusts your Hue and/or Govee lights based on the event. Brightness levels, color temperatures, and RGB values are all configurable.
+
+## Requirements
+
+- [Plex Media Server](https://www.plex.tv/)
+- [Tautulli](https://tautulli.com/) (for webhooks)
+- Python 3.8+ with `requests` (`pip install requests`)
+- Philips Hue bridge and/or Govee smart lights with a cloud API key
+
+## Quick Start
+
+```bash
+git clone https://github.com/liamvibecodes/plex-lights.git
+cd plex-lights
+pip install requests
+
+# Configure your lights
+cp config.json.example config.json
+# Edit config.json with your bridge IP, API key, light IDs, etc.
+
+# Test it
+python3 plex-lights.py
+
+# Install as background service (auto-starts on boot)
+bash install.sh
+```
+
+## Configuration
+
+Copy `config.json.example` to `config.json` and edit it:
+
+### Philips Hue
+
+```json
+{
+  "hue": {
+    "enabled": true,
+    "bridge_ip": "192.168.1.xxx",
+    "api_user": "your-hue-api-username",
+    "lights": [1, 2, 3]
+  }
+}
+```
+
+**Finding your Hue API user:** Follow the [Hue API getting started guide](https://developers.meethue.com/develop/get-started-2/) to create an authorized username. Or if you already use Home Assistant, check your Hue integration for the bridge IP.
+
+**Finding light IDs:** Open `http://<bridge-ip>/api/<username>/lights` in a browser. Each light has a numeric ID.
+
+### Govee
+
+```json
+{
+  "govee": {
+    "enabled": true,
+    "api_key": "your-govee-api-key",
+    "device": "AA:BB:CC:DD:EE:FF:00:11",
+    "model": "H6076"
+  }
+}
+```
+
+**Getting a Govee API key:** Open the Govee Home app > Profile > About Us > Apply for API Key.
+
+**Finding device ID and model:** Use the [Govee API](https://developer.govee.com/reference/get-you-devices) to list your devices, or check the Govee Home app under device settings.
+
+### Player Filtering
+
+By default, plex-lights triggers on ALL players. To limit it to your TV:
+
+1. Start a movie and check the log for the player name
+2. Add it to config.json:
+
+```json
+{
+  "tv_player_name": "Living Room TV"
+}
+```
+
+### Light Modes
+
+Customize brightness and color for each state:
+
+```json
+{
+  "modes": {
+    "movie": {
+      "hue_brightness": 13,
+      "hue_color_temp": 500,
+      "govee_brightness": 5,
+      "govee_color": {"r": 255, "g": 120, "b": 20}
+    }
+  }
+}
+```
+
+| Setting | Range | Notes |
+|---------|-------|-------|
+| `hue_brightness` | 1-254 | 1 = dimmest, 254 = brightest |
+| `hue_color_temp` | 153-500 | 153 = cool daylight, 500 = warm candlelight |
+| `govee_brightness` | 0-100 | Percentage |
+| `govee_color` | RGB 0-255 | Only applies to color-capable Govee lights |
+
+### Environment Variables
+
+For simple setups without a config file:
+
+```bash
+export HUE_BRIDGE_IP=192.168.1.xxx
+export HUE_API_USER=your-username
+export HUE_LIGHTS=1,2,3
+export GOVEE_API_KEY=your-key
+export GOVEE_DEVICE=AA:BB:CC:DD:EE:FF:00:11
+export GOVEE_MODEL=H6076
+export TV_PLAYER_NAME="Living Room TV"
+python3 plex-lights.py
+```
+
+## Tautulli Webhook Setup
+
+1. Open Tautulli > Settings > Notification Agents > Add a new notification agent
+2. Select **Webhook**
+3. Set the webhook URL to `http://localhost:32500`
+4. Under **Triggers**, enable:
+   - Playback Start
+   - Playback Stop
+   - Playback Pause
+   - Playback Resume
+5. Under **Data**, set the JSON body for each trigger:
+
+```json
+{
+  "event": "{action}",
+  "player": "{player}",
+  "title": "{title}",
+  "media_type": "{media_type}"
+}
+```
+
+6. Save and test with "Test Notification"
+
+## Running as a Service
+
+The install script creates a launchd job that starts on boot and auto-restarts if it crashes:
+
+```bash
+# Install
+bash install.sh
+
+# Restart
+launchctl kickstart -k gui/$(id -u)/com.plex-lights
+
+# Stop
+launchctl bootout gui/$(id -u)/com.plex-lights
+
+# Uninstall
+bash install.sh --uninstall
+```
+
+## Works With
+
+- [mac-media-stack](https://github.com/liamvibecodes/mac-media-stack) - Docker-based media server for macOS
+- [mac-media-stack-advanced](https://github.com/liamvibecodes/mac-media-stack-advanced) - Full automated media server with Tautulli included
+
+## Author
+
+Built by [@liamvibecodes](https://github.com/liamvibecodes)
+
+## License
+
+[MIT](LICENSE)
