@@ -18,24 +18,47 @@
     "model": "H6076"
   },
 
+  "home_assistant": {
+    "enabled": false,
+    "url": "http://homeassistant.local:8123",
+    "token": "your-long-lived-access-token",
+    "verify_ssl": true,
+    "transition_seconds": 1,
+    "entity_ids": ["light.living_room_lamp"],
+    "mode_scenes": {
+      "movie": "",
+      "pause": "",
+      "normal": ""
+    }
+  },
+
   "modes": {
     "movie": {
       "hue_brightness": 13,
       "hue_color_temp": 500,
       "govee_brightness": 5,
-      "govee_color": {"r": 255, "g": 120, "b": 20}
+      "govee_color": {"r": 255, "g": 120, "b": 20},
+      "ha_brightness_pct": 5,
+      "ha_color_temp_kelvin": 2200,
+      "ha_rgb_color": [255, 120, 20]
     },
     "pause": {
       "hue_brightness": 77,
       "hue_color_temp": 400,
       "govee_brightness": 25,
-      "govee_color": {"r": 255, "g": 160, "b": 60}
+      "govee_color": {"r": 255, "g": 160, "b": 60},
+      "ha_brightness_pct": 25,
+      "ha_color_temp_kelvin": 2600,
+      "ha_rgb_color": [255, 160, 60]
     },
     "normal": {
       "hue_brightness": 254,
       "hue_color_temp": 366,
       "govee_brightness": 100,
-      "govee_color": {"r": 255, "g": 200, "b": 120}
+      "govee_color": {"r": 255, "g": 200, "b": 120},
+      "ha_brightness_pct": 100,
+      "ha_color_temp_kelvin": 3000,
+      "ha_rgb_color": []
     }
   }
 }

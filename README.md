@@ -4,13 +4,14 @@
   <br><br>
   <strong>Auto-dims your lights when a movie starts playing on Plex</strong>
   <br>
-  <sub>Webhook server for Tautulli. Supports Philips Hue and Govee smart lights. Runs as a background service on macOS.</sub>
+  <sub>Webhook server for Tautulli. Supports Philips Hue, Govee, and Home Assistant lights. Runs as a background service on macOS.</sub>
   <br><br>
   <img src="https://img.shields.io/badge/Python-3776AB?style=flat-square&logo=python&logoColor=white" />
   <img src="https://img.shields.io/badge/Plex-EBAF00?style=flat-square&logo=plex&logoColor=white" />
   <img src="https://img.shields.io/badge/Tautulli-E5A00D?style=flat-square&logoColor=white" />
   <img src="https://img.shields.io/badge/Philips_Hue-4DB8FF?style=flat-square&logoColor=white" />
   <img src="https://img.shields.io/badge/Govee-00C853?style=flat-square&logoColor=white" />
+  <img src="https://img.shields.io/badge/Home_Assistant-18BCF2?style=flat-square&logo=homeassistant&logoColor=white" />
   <img src="https://img.shields.io/badge/macOS-000000?style=flat-square&logo=apple&logoColor=white" />
   <br><br>
   <img src="https://img.shields.io/github/stars/liamvibecodes/plex-lights?style=flat-square&color=yellow" />
@@ -31,10 +32,10 @@ Works with movies and TV episodes. Ignores music, photos, and other media types.
 ## How It Works
 
 ```
-Plex -> Tautulli (webhook) -> plex-lights.py (port 32500) -> Hue bridge / Govee API
+Plex -> Tautulli (webhook) -> plex-lights.py (port 32500) -> Hue bridge / Govee API / Home Assistant API
 ```
 
-Tautulli sends play/pause/stop webhooks to plex-lights. The script adjusts your Hue and/or Govee lights based on the event. Brightness levels, color temperatures, and RGB values are all configurable.
+Tautulli sends play/pause/stop webhooks to plex-lights. The script adjusts your lights based on the event. Brightness levels, color temperatures, and RGB values are configurable per mode.
 
 ## Requirements
 
@@ -42,6 +43,7 @@ Tautulli sends play/pause/stop webhooks to plex-lights. The script adjusts your 
 - [Tautulli](https://tautulli.com/) (for webhooks)
 - Python 3.8+ (`pip install -r requirements.txt`)
 - Philips Hue bridge and/or Govee smart lights with a cloud API key
+- Optional: Home Assistant with a long-lived access token
 
 ## Quick Start
 
@@ -99,6 +101,36 @@ Copy `config.json.example` to `config.json` and edit it:
 
 **Finding device ID and model:** Use the [Govee API](https://developer.govee.com/reference/get-you-devices) to list your devices, or check the Govee Home app under device settings.
 
+### Home Assistant
+
+```json
+{
+  "home_assistant": {
+    "enabled": true,
+    "url": "http://homeassistant.local:8123",
+    "token": "your-long-lived-access-token",
+    "verify_ssl": true,
+    "transition_seconds": 1,
+    "entity_ids": ["light.living_room_lamp"],
+    "mode_scenes": {
+      "movie": "",
+      "pause": "",
+      "normal": ""
+    }
+  }
+}
+```
+
+Use either approach:
+
+- `entity_ids`: plex-lights calls `light.turn_on` with per-mode values.
+- `mode_scenes`: set `movie`, `pause`, and/or `normal` scene entities and scenes are used for those modes.
+
+Long-lived access token in Home Assistant:
+
+1. Profile (bottom-left) -> Security
+2. Long-Lived Access Tokens -> Create Token
+
 ### Player Filtering
 
 By default, plex-lights triggers on ALL players. To limit it to your TV:
@@ -152,6 +184,9 @@ Customize brightness and color for each state:
 | `hue_color_temp` | 153-500 | 153 = cool daylight, 500 = warm candlelight |
 | `govee_brightness` | 0-100 | Percentage |
 | `govee_color` | RGB 0-255 | Only applies to color-capable Govee lights |
+| `ha_brightness_pct` | 0-100 | Home Assistant `light.turn_on` brightness |
+| `ha_color_temp_kelvin` | 1500-9000 | Used when `ha_rgb_color` is `[]` |
+| `ha_rgb_color` | `[]` or RGB 0-255 | `[]` disables RGB for that mode |
 
 ### Environment Variables
 
@@ -164,6 +199,11 @@ export HUE_LIGHTS=1,2,3
 export GOVEE_API_KEY=your-key
 export GOVEE_DEVICE=AA:BB:CC:DD:EE:FF:00:11
 export GOVEE_MODEL=H6076
+export HOME_ASSISTANT_URL=http://homeassistant.local:8123
+export HOME_ASSISTANT_TOKEN=your-long-lived-access-token
+export HOME_ASSISTANT_ENTITY_IDS=light.living_room_lamp,light.tv_bias
+export HOME_ASSISTANT_MODE_SCENES=movie:scene.movie_mode,pause:scene.pause_mode
+export HOME_ASSISTANT_VERIFY_SSL=true
 export TV_PLAYER_NAME="Living Room TV"
 export PLEX_LIGHTS_WEBHOOK_TOKEN="change-this-to-a-random-secret"
 python3 plex-lights.py

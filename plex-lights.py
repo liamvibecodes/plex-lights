@@ -3,7 +3,8 @@
 Plex Lights — dims your smart lights when a movie starts playing.
 
 Runs as a webhook server that receives play/pause/resume/stop events from
-Tautulli and adjusts Philips Hue and/or Govee lights automatically.
+Tautulli and adjusts Philips Hue, Govee, and/or Home Assistant lights
+automatically.
 
 Play/resume -> dim to candlelight
 Pause       -> brighten slightly
@@ -56,24 +57,46 @@ DEFAULT_CONFIG = {
         "device": "",
         "model": "",
     },
+    "home_assistant": {
+        "enabled": False,
+        "url": "",
+        "token": "",
+        "verify_ssl": True,
+        "transition_seconds": 1,
+        "entity_ids": [],
+        "mode_scenes": {
+            "movie": "",
+            "pause": "",
+            "normal": "",
+        },
+    },
     "modes": {
         "movie": {
             "hue_brightness": 13,
             "hue_color_temp": 500,
             "govee_brightness": 5,
             "govee_color": {"r": 255, "g": 120, "b": 20},
+            "ha_brightness_pct": 5,
+            "ha_color_temp_kelvin": 2200,
+            "ha_rgb_color": [255, 120, 20],
         },
         "pause": {
             "hue_brightness": 77,
             "hue_color_temp": 400,
             "govee_brightness": 25,
             "govee_color": {"r": 255, "g": 160, "b": 60},
+            "ha_brightness_pct": 25,
+            "ha_color_temp_kelvin": 2600,
+            "ha_rgb_color": [255, 160, 60],
         },
         "normal": {
             "hue_brightness": 254,
             "hue_color_temp": 366,
             "govee_brightness": 100,
             "govee_color": {"r": 255, "g": 200, "b": 120},
+            "ha_brightness_pct": 100,
+            "ha_color_temp_kelvin": 3000,
+            "ha_rgb_color": [],
         },
     },
 }
@@ -104,6 +127,30 @@ def parse_hue_lights(lights_str):
     return parsed
 
 
+def parse_string_list(values_str):
+    """Parse comma-separated values into a trimmed list."""
+    if not values_str.strip():
+        return []
+    return [value.strip() for value in values_str.split(",") if value.strip()]
+
+
+def parse_mode_scenes(mapping_str):
+    """Parse mode scene mappings from env var, e.g. movie:scene.movie_mode,pause:scene.pause_mode."""
+    mode_scenes = {}
+    if not mapping_str.strip():
+        return mode_scenes
+
+    for pair in mapping_str.split(","):
+        if ":" not in pair:
+            continue
+        mode_name, scene_entity = pair.split(":", 1)
+        mode_name = mode_name.strip().lower()
+        scene_entity = scene_entity.strip()
+        if mode_name in ("movie", "pause", "normal") and scene_entity:
+            mode_scenes[mode_name] = scene_entity
+    return mode_scenes
+
+
 def as_bool(value):
     """Parse booleans from native bools or common string representations."""
     if isinstance(value, bool):
@@ -115,6 +162,32 @@ def as_bool(value):
         if normalized in {"0", "false", "no", "off", ""}:
             return False
     return bool(value)
+
+
+def validate_rgb_list(mode, errors, mode_name, field_name):
+    """Validate RGB list. Empty list is treated as disabled."""
+    rgb = mode.get(field_name)
+    if rgb == []:
+        return
+
+    if not isinstance(rgb, list) or len(rgb) != 3:
+        errors.append(f"modes.{mode_name}.{field_name} must be a list of 3 integers or []")
+        return
+
+    normalized = []
+    for idx, value in enumerate(rgb):
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            errors.append(f"modes.{mode_name}.{field_name}[{idx}] must be an integer")
+            continue
+        if value < 0 or value > 255:
+            errors.append(f"modes.{mode_name}.{field_name}[{idx}] must be between 0 and 255")
+            continue
+        normalized.append(value)
+
+    if len(normalized) == 3:
+        mode[field_name] = normalized
 
 
 def validate_int_range(config, errors, field_name, min_value, max_value):
@@ -149,6 +222,9 @@ def validate_modes(config, errors):
         validate_int_range(mode, errors, "hue_brightness", 1, 254)
         validate_int_range(mode, errors, "hue_color_temp", 153, 500)
         validate_int_range(mode, errors, "govee_brightness", 0, 100)
+        validate_int_range(mode, errors, "ha_brightness_pct", 0, 100)
+        validate_int_range(mode, errors, "ha_color_temp_kelvin", 1500, 9000)
+        validate_rgb_list(mode, errors, mode_name, "ha_rgb_color")
 
         color = mode.get("govee_color")
         if not isinstance(color, dict):
@@ -221,10 +297,51 @@ def validate_config(config):
         if not str(govee.get("model", "")).strip():
             errors.append("govee.model is required when govee.enabled=true")
 
+    home_assistant = config.get("home_assistant")
+    if not isinstance(home_assistant, dict):
+        errors.append("home_assistant must be an object")
+        home_assistant = {}
+        config["home_assistant"] = home_assistant
+    home_assistant["enabled"] = as_bool(home_assistant.get("enabled"))
+    home_assistant["verify_ssl"] = as_bool(home_assistant.get("verify_ssl", True))
+    validate_int_range(home_assistant, errors, "transition_seconds", 0, 30)
+
+    mode_scenes = home_assistant.get("mode_scenes")
+    if not isinstance(mode_scenes, dict):
+        errors.append("home_assistant.mode_scenes must be an object")
+        mode_scenes = {}
+        home_assistant["mode_scenes"] = mode_scenes
+    for mode_name in ("movie", "pause", "normal"):
+        mode_scenes[mode_name] = str(mode_scenes.get(mode_name, "")).strip()
+
+    entity_ids = home_assistant.get("entity_ids")
+    if not isinstance(entity_ids, list):
+        errors.append("home_assistant.entity_ids must be a list")
+        entity_ids = []
+        home_assistant["entity_ids"] = entity_ids
+    else:
+        home_assistant["entity_ids"] = [str(entity).strip() for entity in entity_ids if str(entity).strip()]
+
+    if home_assistant["enabled"]:
+        home_assistant["url"] = str(home_assistant.get("url", "")).strip().rstrip("/")
+        home_assistant["token"] = str(home_assistant.get("token", "")).strip()
+
+        if not home_assistant["url"]:
+            errors.append("home_assistant.url is required when home_assistant.enabled=true")
+        if not home_assistant["token"]:
+            errors.append("home_assistant.token is required when home_assistant.enabled=true")
+
+        has_scene = any(home_assistant["mode_scenes"].values())
+        has_entities = bool(home_assistant["entity_ids"])
+        if not has_scene and not has_entities:
+            errors.append(
+                "home_assistant requires entity_ids and/or mode_scenes when home_assistant.enabled=true"
+            )
+
     validate_modes(config, errors)
 
-    if not hue["enabled"] and not govee["enabled"]:
-        errors.append("Enable at least one provider (hue.enabled or govee.enabled)")
+    if not hue["enabled"] and not govee["enabled"] and not home_assistant["enabled"]:
+        errors.append("Enable at least one provider (hue.enabled, govee.enabled, or home_assistant.enabled)")
 
     if errors:
         raise ValueError("Invalid config:\n- " + "\n- ".join(errors))
@@ -265,6 +382,19 @@ def load_config():
             config["govee"]["api_key"] = os.environ["GOVEE_API_KEY"]
             config["govee"]["device"] = os.environ.get("GOVEE_DEVICE", "")
             config["govee"]["model"] = os.environ.get("GOVEE_MODEL", "")
+
+        if os.environ.get("HOME_ASSISTANT_URL") or os.environ.get("HOME_ASSISTANT_TOKEN"):
+            config["home_assistant"]["enabled"] = True
+            config["home_assistant"]["url"] = os.environ.get("HOME_ASSISTANT_URL", "")
+            config["home_assistant"]["token"] = os.environ.get("HOME_ASSISTANT_TOKEN", "")
+            config["home_assistant"]["verify_ssl"] = os.environ.get("HOME_ASSISTANT_VERIFY_SSL", "true")
+            config["home_assistant"]["entity_ids"] = parse_string_list(
+                os.environ.get("HOME_ASSISTANT_ENTITY_IDS", "")
+            )
+            config["home_assistant"]["mode_scenes"] = deep_merge(
+                config["home_assistant"]["mode_scenes"],
+                parse_mode_scenes(os.environ.get("HOME_ASSISTANT_MODE_SCENES", "")),
+            )
 
     return validate_config(config)
 
@@ -395,6 +525,81 @@ def set_govee_light(config, brightness, color, log):
         log.info("Govee brightness updated to %s", brightness)
 
 
+def home_assistant_service_request(config, domain, service, data, log):
+    """Send one Home Assistant service call."""
+    home_assistant = config["home_assistant"]
+    endpoint = f"{home_assistant['url']}/api/services/{domain}/{service}"
+    headers = {
+        "Authorization": f"Bearer {home_assistant['token']}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        response = requests.post(
+            endpoint,
+            headers=headers,
+            json=data,
+            timeout=REQUEST_TIMEOUT_SECONDS,
+            verify=home_assistant["verify_ssl"],
+        )
+    except requests.RequestException as exc:
+        log.error("Home Assistant request failed: %s", exc)
+        return False
+
+    if not response.ok:
+        log.error(
+            "Home Assistant service %s.%s failed: HTTP %s %s",
+            domain,
+            service,
+            response.status_code,
+            response.text,
+        )
+        return False
+
+    return True
+
+
+def set_home_assistant_mode(config, mode_name, mode, log):
+    """Apply mode via Home Assistant scene or light entities."""
+    home_assistant = config["home_assistant"]
+    if not home_assistant["enabled"]:
+        return
+
+    scene_entity = home_assistant["mode_scenes"].get(mode_name, "")
+    if scene_entity:
+        if home_assistant_service_request(
+            config,
+            "scene",
+            "turn_on",
+            {"entity_id": scene_entity},
+            log,
+        ):
+            log.info("Home Assistant scene applied for mode '%s': %s", mode_name, scene_entity)
+        return
+
+    entity_ids = home_assistant["entity_ids"]
+    if not entity_ids:
+        log.warning("Home Assistant enabled but no entity_ids configured for mode '%s'", mode_name)
+        return
+
+    payload = {
+        "entity_id": entity_ids,
+        "brightness_pct": mode["ha_brightness_pct"],
+    }
+
+    transition_seconds = home_assistant["transition_seconds"]
+    if transition_seconds > 0:
+        payload["transition"] = transition_seconds
+
+    if mode["ha_rgb_color"]:
+        payload["rgb_color"] = mode["ha_rgb_color"]
+    else:
+        payload["color_temp_kelvin"] = mode["ha_color_temp_kelvin"]
+
+    if home_assistant_service_request(config, "light", "turn_on", payload, log):
+        log.info("Home Assistant lights updated for mode '%s'", mode_name)
+
+
 def apply_mode(config, mode_name, log):
     """Apply a light mode to all configured lights."""
     mode = config["modes"].get(mode_name)
@@ -405,6 +610,7 @@ def apply_mode(config, mode_name, log):
     log.info("Applying mode: %s", mode_name)
     set_hue_lights(config, mode["hue_brightness"], mode["hue_color_temp"], log)
     set_govee_light(config, mode["govee_brightness"], mode["govee_color"], log)
+    set_home_assistant_mode(config, mode_name, mode, log)
 
 
 # --- Webhook Handler ---
@@ -555,6 +761,7 @@ def main():
 
     hue_enabled = config["hue"]["enabled"]
     govee_enabled = config["govee"]["enabled"]
+    home_assistant_enabled = config["home_assistant"]["enabled"]
 
     port = config["port"]
     log.info("Plex Lights starting on port %s", port)
@@ -563,6 +770,14 @@ def main():
         log.info("Hue: bridge=%s, lights=%s", config["hue"]["bridge_ip"], config["hue"]["lights"])
     if govee_enabled:
         log.info("Govee: device=%s, model=%s", config["govee"]["device"], config["govee"]["model"])
+    if home_assistant_enabled:
+        has_scene = any(config["home_assistant"]["mode_scenes"].values())
+        log.info(
+            "Home Assistant: url=%s, entities=%s, mode_scenes=%s",
+            config["home_assistant"]["url"],
+            len(config["home_assistant"]["entity_ids"]),
+            "enabled" if has_scene else "disabled",
+        )
 
     if config["webhook_token"]:
         log.info("Webhook token auth is enabled")
