@@ -25,7 +25,7 @@
 |-------|--------|
 | **Play / Resume** | Dim to candlelight (~5%, warm amber) |
 | **Pause** | Brighten slightly (~30%, soft amber) |
-| **Stop / End** | Back to normal (100%, warm white) |
+| **Stop / End** | Restore pre-playback state (fallback: `normal` mode) |
 
 Works with movies and TV episodes. Ignores music, photos, and other media types.
 
@@ -35,7 +35,7 @@ Works with movies and TV episodes. Ignores music, photos, and other media types.
 Plex -> Tautulli (webhook) -> plex-lights.py (port 32500) -> Hue bridge / Govee API / Home Assistant API
 ```
 
-Tautulli sends play/pause/stop webhooks to plex-lights. The script adjusts your lights based on the event. Brightness levels, color temperatures, and RGB values are configurable per mode.
+Tautulli sends play/pause/stop webhooks to plex-lights. The script adjusts your lights based on the event. It snapshots light state at playback start, then restores that state when playback stops. Brightness levels, color temperatures, and RGB values are configurable per mode.
 
 ## Requirements
 
@@ -174,6 +174,31 @@ Long-lived access token in Home Assistant:
 1. Profile (bottom-left) -> Security
 2. Long-Lived Access Tokens -> Create Token
 
+### State Restore
+
+By default, plex-lights restores your pre-playback lighting state on `stop/end` instead of forcing 100% brightness.
+
+```json
+{
+  "state_restore": {
+    "enabled": true,
+    "fallback_mode": "normal",
+    "home_assistant_scene_id": "plex_lights_preplay",
+    "capture_govee_state": true
+  }
+}
+```
+
+- `enabled`: turn snapshot/restore behavior on/off.
+- `fallback_mode`: mode to apply if restore fails (`movie`, `pause`, or `normal`).
+- `home_assistant_scene_id`: scene ID used for Home Assistant snapshot/restore (`scene.` prefix optional).
+- `capture_govee_state`: capture/restore Govee power/brightness/color state.
+
+Notes:
+
+- Home Assistant snapshot restore requires `home_assistant.entity_ids` so `scene.create` can snapshot entities.
+- If restore is disabled or unavailable, stop/end uses `state_restore.fallback_mode`.
+
 ### Player Filtering
 
 By default, plex-lights triggers on ALL players. To limit it to your TV:
@@ -250,6 +275,10 @@ export HOME_ASSISTANT_VERIFY_SSL=true
 export TV_PLAYER_NAME="Living Room TV"
 export PLEX_LIGHTS_WEBHOOK_TOKEN="change-this-to-a-random-secret"
 export PLEX_LIGHTS_DRY_RUN=false
+export PLEX_LIGHTS_RESTORE_STATE_ENABLED=true
+export PLEX_LIGHTS_RESTORE_FALLBACK_MODE=normal
+export PLEX_LIGHTS_HA_SCENE_ID=plex_lights_preplay
+export PLEX_LIGHTS_CAPTURE_GOVEE_STATE=true
 python3 plex-lights.py
 ```
 

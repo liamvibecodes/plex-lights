@@ -8,7 +8,7 @@ automatically.
 
 Play/resume -> dim to candlelight
 Pause       -> brighten slightly
-Stop/end    -> back to normal
+Stop/end    -> restore pre-playback light state (fallback to configured mode)
 
 Configuration via config.json or environment variables.
 """
@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -72,6 +73,12 @@ DEFAULT_CONFIG = {
             "normal": "",
         },
     },
+    "state_restore": {
+        "enabled": True,
+        "fallback_mode": "normal",
+        "home_assistant_scene_id": "plex_lights_preplay",
+        "capture_govee_state": True,
+    },
     "modes": {
         "movie": {
             "hue_brightness": 13,
@@ -101,6 +108,12 @@ DEFAULT_CONFIG = {
             "ha_rgb_color": [],
         },
     },
+}
+
+RUNTIME_LOCK = threading.Lock()
+RUNTIME_STATE = {
+    "playback_active": False,
+    "snapshot": None,
 }
 
 
@@ -341,7 +354,33 @@ def validate_config(config):
                 "home_assistant requires entity_ids and/or mode_scenes when home_assistant.enabled=true"
             )
 
+    state_restore = config.get("state_restore")
+    if not isinstance(state_restore, dict):
+        errors.append("state_restore must be an object")
+        state_restore = {}
+        config["state_restore"] = state_restore
+
+    state_restore["enabled"] = as_bool(state_restore.get("enabled", True))
+    state_restore["capture_govee_state"] = as_bool(state_restore.get("capture_govee_state", True))
+    state_restore["home_assistant_scene_id"] = str(
+        state_restore.get("home_assistant_scene_id", "plex_lights_preplay")
+    ).strip()
+    if state_restore["home_assistant_scene_id"].startswith("scene."):
+        state_restore["home_assistant_scene_id"] = state_restore["home_assistant_scene_id"][6:]
+    if not state_restore["home_assistant_scene_id"]:
+        state_restore["home_assistant_scene_id"] = "plex_lights_preplay"
+
+    fallback_mode = str(state_restore.get("fallback_mode", "normal")).strip().lower()
+    if not fallback_mode:
+        fallback_mode = "normal"
+    state_restore["fallback_mode"] = fallback_mode
+
     validate_modes(config, errors)
+
+    if state_restore["fallback_mode"] not in config["modes"]:
+        errors.append(
+            f"state_restore.fallback_mode must be one of: {', '.join(sorted(config['modes'].keys()))}"
+        )
 
     if not hue["enabled"] and not govee["enabled"] and not home_assistant["enabled"]:
         errors.append("Enable at least one provider (hue.enabled, govee.enabled, or home_assistant.enabled)")
@@ -374,6 +413,19 @@ def load_config():
         config["log_dir"] = os.environ.get("PLEX_LIGHTS_LOG_DIR", "")
         config["webhook_token"] = os.environ.get("PLEX_LIGHTS_WEBHOOK_TOKEN", "")
         config["dry_run"] = os.environ.get("PLEX_LIGHTS_DRY_RUN", "false")
+        config["state_restore"]["enabled"] = os.environ.get("PLEX_LIGHTS_RESTORE_STATE_ENABLED", "true")
+        config["state_restore"]["fallback_mode"] = os.environ.get(
+            "PLEX_LIGHTS_RESTORE_FALLBACK_MODE",
+            "normal",
+        )
+        config["state_restore"]["home_assistant_scene_id"] = os.environ.get(
+            "PLEX_LIGHTS_HA_SCENE_ID",
+            "plex_lights_preplay",
+        )
+        config["state_restore"]["capture_govee_state"] = os.environ.get(
+            "PLEX_LIGHTS_CAPTURE_GOVEE_STATE",
+            "true",
+        )
 
         if os.environ.get("HUE_BRIDGE_IP"):
             config["hue"]["enabled"] = True
@@ -422,6 +474,474 @@ def setup_logging(config):
 
 
 # --- Light Control ---
+
+
+def normalize_scene_entity_id(scene_id):
+    """Normalize scene IDs to both raw ID and entity_id format."""
+    normalized = str(scene_id or "").strip()
+    if not normalized:
+        return "", ""
+    if normalized.startswith("scene."):
+        return normalized[6:], normalized
+    return normalized, f"scene.{normalized}"
+
+
+def parse_bool_like(value):
+    """Parse booleans from mixed payloads."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value != 0
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        return lowered in {"on", "true", "1", "yes"}
+    return bool(value)
+
+
+def parse_govee_rgb(value):
+    """Normalize Govee RGB state value to dict form."""
+    if isinstance(value, int):
+        return {
+            "r": (value >> 16) & 0xFF,
+            "g": (value >> 8) & 0xFF,
+            "b": value & 0xFF,
+        }
+    if isinstance(value, dict):
+        try:
+            return {
+                "r": int(value.get("r", 0)),
+                "g": int(value.get("g", 0)),
+                "b": int(value.get("b", 0)),
+            }
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def iter_capabilities(payload):
+    """Recursively find capability arrays in mixed API payloads."""
+    if isinstance(payload, dict):
+        capabilities = payload.get("capabilities")
+        if isinstance(capabilities, list):
+            yield capabilities
+        for value in payload.values():
+            yield from iter_capabilities(value)
+    elif isinstance(payload, list):
+        for item in payload:
+            yield from iter_capabilities(item)
+
+
+def get_hue_light_state(config, light_id, log):
+    """Fetch one Hue light state for snapshot/restore."""
+    hue = config["hue"]
+    url = f"http://{hue['bridge_ip']}/api/{hue['api_user']}/lights/{light_id}"
+    try:
+        response = requests.get(url, timeout=REQUEST_TIMEOUT_SECONDS)
+    except requests.RequestException as exc:
+        log.error("Hue snapshot read failed for light %s: %s", light_id, exc)
+        return None
+
+    if not response.ok:
+        log.error(
+            "Hue snapshot read failed for light %s: HTTP %s %s",
+            light_id,
+            response.status_code,
+            response.text,
+        )
+        return None
+
+    try:
+        data = response.json()
+    except ValueError:
+        log.error("Hue snapshot read returned invalid JSON for light %s", light_id)
+        return None
+
+    state = data.get("state")
+    if not isinstance(state, dict):
+        log.error("Hue snapshot read returned invalid state for light %s", light_id)
+        return None
+
+    snapshot = {
+        "on": bool(state.get("on", True)),
+        "bri": state.get("bri"),
+        "ct": state.get("ct"),
+        "hue": state.get("hue"),
+        "sat": state.get("sat"),
+        "xy": state.get("xy"),
+        "colormode": state.get("colormode"),
+    }
+    return snapshot
+
+
+def capture_hue_snapshot(config, log):
+    """Capture current Hue state for configured lights."""
+    hue = config["hue"]
+    if not hue["enabled"] or not hue["lights"]:
+        return None
+
+    if config.get("dry_run", False):
+        log.info("[DRY RUN] Hue snapshot capture skipped")
+        return {}
+
+    snapshot = {}
+    for light_id in hue["lights"]:
+        state = get_hue_light_state(config, light_id, log)
+        if state is not None:
+            snapshot[str(light_id)] = state
+
+    if not snapshot:
+        log.warning("Hue snapshot capture found no restorable light states")
+        return None
+    return snapshot
+
+
+def restore_hue_snapshot(config, snapshot, log):
+    """Restore previously captured Hue state."""
+    hue = config["hue"]
+    if not hue["enabled"] or not isinstance(snapshot, dict):
+        return False
+
+    if config.get("dry_run", False):
+        log.info("[DRY RUN] Hue snapshot restore: %s lights", len(snapshot))
+        return True
+
+    restored_any = False
+    for light_id, state in snapshot.items():
+        if not isinstance(state, dict):
+            continue
+
+        payload = {"on": bool(state.get("on", True))}
+        if payload["on"]:
+            bri = state.get("bri")
+            if isinstance(bri, int):
+                payload["bri"] = max(1, min(254, bri))
+
+            colormode = str(state.get("colormode", "")).lower()
+            if colormode == "ct" and isinstance(state.get("ct"), int):
+                payload["ct"] = max(153, min(500, state["ct"]))
+            elif colormode == "hs" and isinstance(state.get("hue"), int) and isinstance(state.get("sat"), int):
+                payload["hue"] = max(0, min(65535, state["hue"]))
+                payload["sat"] = max(0, min(254, state["sat"]))
+            elif colormode == "xy" and isinstance(state.get("xy"), list) and len(state["xy"]) == 2:
+                payload["xy"] = state["xy"]
+            elif isinstance(state.get("ct"), int):
+                payload["ct"] = max(153, min(500, state["ct"]))
+
+        url = f"http://{hue['bridge_ip']}/api/{hue['api_user']}/lights/{light_id}/state"
+        try:
+            response = requests.put(url, json=payload, timeout=REQUEST_TIMEOUT_SECONDS)
+        except requests.RequestException as exc:
+            log.error("Hue restore failed for light %s: %s", light_id, exc)
+            continue
+
+        if not response.ok:
+            log.error("Hue restore failed for light %s: HTTP %s %s", light_id, response.status_code, response.text)
+            continue
+
+        if "error" in response.text.lower():
+            log.error("Hue restore API error for light %s: %s", light_id, response.text)
+            continue
+
+        restored_any = True
+
+    return restored_any
+
+
+def govee_state_request(config, log):
+    """Fetch current Govee device state from API."""
+    govee = config["govee"]
+    headers = {
+        "Govee-API-Key": govee["api_key"],
+        "Content-Type": "application/json",
+    }
+    params = {
+        "sku": govee["model"],
+        "device": govee["device"],
+    }
+
+    try:
+        response = requests.get(
+            "https://openapi.api.govee.com/router/api/v1/device/state",
+            headers=headers,
+            params=params,
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+    except requests.RequestException as exc:
+        log.error("Govee state request failed: %s", exc)
+        return None
+
+    if not response.ok:
+        log.error("Govee state request failed: HTTP %s %s", response.status_code, response.text)
+        return None
+
+    try:
+        parsed = response.json()
+    except ValueError:
+        log.error("Govee state request returned invalid JSON")
+        return None
+
+    if isinstance(parsed, dict) and parsed.get("code") not in (None, 0, 200):
+        log.error("Govee state API error response: %s", response.text)
+        return None
+
+    return parsed
+
+
+def capture_govee_snapshot(config, log):
+    """Capture Govee power/brightness/color state."""
+    govee = config["govee"]
+    if not govee["enabled"]:
+        return None
+    if not config["state_restore"]["capture_govee_state"]:
+        return None
+
+    if config.get("dry_run", False):
+        log.info("[DRY RUN] Govee snapshot capture skipped")
+        return {}
+
+    payload = govee_state_request(config, log)
+    if payload is None:
+        return None
+
+    snapshot = {}
+    for capabilities in iter_capabilities(payload):
+        for capability in capabilities:
+            if not isinstance(capability, dict):
+                continue
+            instance = str(capability.get("instance", ""))
+            state = capability.get("state", {})
+            if isinstance(state, dict):
+                value = state.get("value")
+            else:
+                value = capability.get("value")
+
+            if instance == "powerSwitch":
+                snapshot["on"] = parse_bool_like(value)
+            elif instance == "brightness":
+                try:
+                    snapshot["brightness"] = int(value)
+                except (TypeError, ValueError):
+                    pass
+            elif instance in {"colorRgb", "color"}:
+                rgb = parse_govee_rgb(value)
+                if rgb:
+                    snapshot["color"] = rgb
+
+    if not snapshot:
+        log.warning("Govee snapshot capture found no restorable state values")
+        return None
+    return snapshot
+
+
+def govee_set_power(config, on, log):
+    """Set Govee power switch state."""
+    value = "on" if on else "off"
+    return govee_control_request(
+        config,
+        {
+            "type": "devices.capabilities.on_off",
+            "instance": "powerSwitch",
+            "value": value,
+        },
+        log,
+    )
+
+
+def restore_govee_snapshot(config, snapshot, log):
+    """Restore captured Govee state."""
+    govee = config["govee"]
+    if not govee["enabled"] or not isinstance(snapshot, dict):
+        return False
+
+    if config.get("dry_run", False):
+        log.info("[DRY RUN] Govee snapshot restore: %s", snapshot)
+        return True
+
+    restored_any = False
+    power_state = snapshot.get("on")
+    if power_state is not None:
+        if govee_set_power(config, bool(power_state), log):
+            restored_any = True
+            log.info("Govee power restored to %s", "on" if power_state else "off")
+        if not power_state:
+            return restored_any
+
+    brightness = snapshot.get("brightness")
+    color = snapshot.get("color")
+    if isinstance(brightness, int) and isinstance(color, dict):
+        set_govee_light(config, max(0, min(100, brightness)), color, log)
+        return True
+
+    if isinstance(brightness, int):
+        if govee_control_request(
+            config,
+            {
+                "type": "devices.capabilities.range",
+                "instance": "brightness",
+                "value": max(0, min(100, brightness)),
+            },
+            log,
+        ):
+            restored_any = True
+
+    if isinstance(color, dict):
+        color_value = ((color["r"] & 0xFF) << 16) | ((color["g"] & 0xFF) << 8) | (color["b"] & 0xFF)
+        if govee_control_request(
+            config,
+            {
+                "type": "devices.capabilities.color_setting",
+                "instance": "colorRgb",
+                "value": color_value,
+            },
+            log,
+        ):
+            restored_any = True
+
+    return restored_any
+
+
+def capture_home_assistant_snapshot(config, log):
+    """Capture Home Assistant light states using scene.create snapshots."""
+    home_assistant = config["home_assistant"]
+    if not home_assistant["enabled"]:
+        return None
+
+    entity_ids = home_assistant.get("entity_ids", [])
+    if not entity_ids:
+        log.info("Home Assistant snapshot skipped: no entity_ids configured")
+        return None
+
+    raw_scene_id, scene_entity_id = normalize_scene_entity_id(config["state_restore"]["home_assistant_scene_id"])
+    if not raw_scene_id:
+        log.warning("Home Assistant snapshot skipped: invalid state_restore.home_assistant_scene_id")
+        return None
+
+    payload = {
+        "scene_id": raw_scene_id,
+        "snapshot_entities": entity_ids,
+    }
+
+    if home_assistant_service_request(config, "scene", "create", payload, log):
+        return {"scene_entity_id": scene_entity_id}
+    return None
+
+
+def restore_home_assistant_snapshot(config, snapshot, log):
+    """Restore Home Assistant snapshot scene created at playback start."""
+    home_assistant = config["home_assistant"]
+    if not home_assistant["enabled"] or not isinstance(snapshot, dict):
+        return False
+
+    scene_entity_id = str(snapshot.get("scene_entity_id", "")).strip()
+    if not scene_entity_id:
+        return False
+
+    if home_assistant_service_request(
+        config,
+        "scene",
+        "turn_on",
+        {"entity_id": scene_entity_id},
+        log,
+    ):
+        log.info("Home Assistant snapshot restored: %s", scene_entity_id)
+        return True
+
+    return False
+
+
+def capture_pre_playback_snapshot(config, log):
+    """Capture provider state at playback start."""
+    snapshot = {
+        "captured_at": int(time.time()),
+    }
+
+    hue_snapshot = capture_hue_snapshot(config, log)
+    if hue_snapshot is not None:
+        snapshot["hue"] = hue_snapshot
+
+    govee_snapshot = capture_govee_snapshot(config, log)
+    if govee_snapshot is not None:
+        snapshot["govee"] = govee_snapshot
+
+    home_assistant_snapshot = capture_home_assistant_snapshot(config, log)
+    if home_assistant_snapshot is not None:
+        snapshot["home_assistant"] = home_assistant_snapshot
+
+    if len(snapshot) == 1:
+        return None
+    return snapshot
+
+
+def restore_pre_playback_snapshot(config, snapshot, log):
+    """Restore captured provider states."""
+    restored_any = False
+    if isinstance(snapshot.get("hue"), dict):
+        restored_any = restore_hue_snapshot(config, snapshot["hue"], log) or restored_any
+    if isinstance(snapshot.get("govee"), dict):
+        restored_any = restore_govee_snapshot(config, snapshot["govee"], log) or restored_any
+    if isinstance(snapshot.get("home_assistant"), dict):
+        restored_any = restore_home_assistant_snapshot(config, snapshot["home_assistant"], log) or restored_any
+    return restored_any
+
+
+def apply_stop_behavior(config, log):
+    """Restore pre-playback state on stop/end, with fallback mode."""
+    snapshot = None
+    with RUNTIME_LOCK:
+        snapshot = RUNTIME_STATE.get("snapshot")
+        RUNTIME_STATE["snapshot"] = None
+        RUNTIME_STATE["playback_active"] = False
+
+    if config["state_restore"]["enabled"] and isinstance(snapshot, dict):
+        if restore_pre_playback_snapshot(config, snapshot, log):
+            log.info("Restored pre-playback light state")
+            return
+        log.warning(
+            "Pre-playback restore attempted but no provider restored successfully; applying fallback mode '%s'",
+            config["state_restore"]["fallback_mode"],
+        )
+
+    apply_mode(config, config["state_restore"]["fallback_mode"], log)
+
+
+def apply_event_mode(config, event, mode_name, log):
+    """Apply event behavior with state snapshot/restore logic."""
+    if event == "play":
+        if config["state_restore"]["enabled"]:
+            should_capture = False
+            with RUNTIME_LOCK:
+                if not RUNTIME_STATE["playback_active"] and RUNTIME_STATE["snapshot"] is None:
+                    should_capture = True
+
+            if should_capture:
+                snapshot = capture_pre_playback_snapshot(config, log)
+                with RUNTIME_LOCK:
+                    RUNTIME_STATE["snapshot"] = snapshot
+                if snapshot is not None:
+                    log.info("Captured pre-playback light snapshot")
+                else:
+                    log.warning("State restore is enabled but no provider snapshot could be captured")
+
+        with RUNTIME_LOCK:
+            RUNTIME_STATE["playback_active"] = True
+        apply_mode(config, mode_name, log)
+        return
+
+    if event == "resume":
+        with RUNTIME_LOCK:
+            RUNTIME_STATE["playback_active"] = True
+        apply_mode(config, mode_name, log)
+        return
+
+    if event == "pause":
+        apply_mode(config, mode_name, log)
+        return
+
+    if event == "stop":
+        apply_stop_behavior(config, log)
+        return
+
+    apply_mode(config, mode_name, log)
 
 
 def set_hue_lights(config, bri, ct, log):
@@ -752,7 +1272,7 @@ def make_handler(config, log):
 
             mode_name = EVENT_TO_MODE.get(event)
             if mode_name:
-                apply_mode(config, mode_name, log)
+                apply_event_mode(config, event, mode_name, log)
             else:
                 log.info("Unhandled event: %s", event)
 
@@ -824,6 +1344,16 @@ def main():
         log.info("Webhook token auth is enabled")
     if config["dry_run"]:
         log.info("Dry-run mode enabled: provider calls will be simulated")
+    if config["state_restore"]["enabled"]:
+        log.info(
+            "State restore enabled: stop/end restores pre-playback state (fallback mode: %s)",
+            config["state_restore"]["fallback_mode"],
+        )
+    else:
+        log.info(
+            "State restore disabled: stop/end uses fallback mode '%s'",
+            config["state_restore"]["fallback_mode"],
+        )
 
     tv_player = config.get("tv_player_name", "")
     if tv_player:

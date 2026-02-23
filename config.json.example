@@ -33,6 +33,13 @@
     }
   },
 
+  "state_restore": {
+    "enabled": true,
+    "fallback_mode": "normal",
+    "home_assistant_scene_id": "plex_lights_preplay",
+    "capture_govee_state": true
+  },
+
   "modes": {
     "movie": {
       "hue_brightness": 13,
